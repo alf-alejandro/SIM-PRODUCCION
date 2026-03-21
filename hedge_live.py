@@ -827,7 +827,23 @@ if __name__ == "__main__":
                     body = f.read()
                 self._send(200, "text/html; charset=utf-8", body)
             else:
-                self._send(404, "text/plain", b"dashboard.html no encontrado")
+                # Fallback 200 para healthcheck de Railway
+                try:
+                    if os.path.isfile(STATE_FILE):
+                        with open(STATE_FILE) as f:
+                            st = json.load(f)
+                    else:
+                        st = {}
+                    body = (
+                        f"<html><body><pre>HEDGE LIVE v9 — OK\n"
+                        f"Capital: ${st.get('capital', CAPITAL_INICIAL):.2f}\n"
+                        f"PnL: ${st.get('pnl_total', 0):.2f}\n"
+                        f"Paused: {st.get('paused', True)}\n"
+                        f"W:{st.get('wins',0)} L:{st.get('losses',0)}</pre></body></html>"
+                    ).encode()
+                except Exception:
+                    body = b"<html><body>HEDGE LIVE v9 — OK</body></html>"
+                self._send(200, "text/html; charset=utf-8", body)
 
         def _serve_status(self):
             try:
