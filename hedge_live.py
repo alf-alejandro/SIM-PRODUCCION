@@ -381,13 +381,16 @@ def forzar_salida(
                f"con {int(secs)}s — omitiendo venta")
         return 0.0, 0.0  # guard activo
 
-    # [4] Escalado: bid → bid-0.02 → bid-0.05
-    # En simulación tomamos el mejor precio factible (bid si hay liquidez)
-    descuentos = [0.0, 0.02, 0.05]
-    exit_precio = max(bid - descuentos[0], 0.01)  # simula fill al bid
+    # Escalado de precio fiel a produccion:
+    # intentos 1-5: bid exacto
+    # intentos 6-10: bid - 0.02
+    # intentos 11+:  bid - 0.05
+    # En sim no hay reintentos reales, pero simulamos que la primera venta
+    # exitosa ocurre al bid (escenario normal sin congestion de mercado).
+    exit_precio = max(round(bid, 4), 0.01)
 
     pnl = round(shares * exit_precio - usd_original, 4)
-    log_ev(f"  EXIT @ {exit_precio:.4f} (bid={bid:.4f}) | escalado sim | {razon}")
+    log_ev(f"  EXIT @ {exit_precio:.4f} (bid={bid:.4f}) | {razon}")
     return exit_precio, pnl
 
 
@@ -673,26 +676,19 @@ async def main_loop():
     restaurar_estado()
     guardar_estado()
 
-    mkt             = None
-    loop            = asyncio.get_running_loop()
-    signal_up_cache = None
-    signal_dn_cache = None
-    ya_opero_ciclo  = False
-    primer_ciclo    = True  # [4] salta primer ciclo tras activación
+    mkt                = None
+    loop               = asyncio.get_running_loop()
+    signal_up_cache    = None
+    signal_dn_cache    = None
+    ya_opero_ciclo     = False
+    saltar_primer_mkt  = True  # fiel a prod: salta el primer mercado encontrado tras activar
 
     while True:
         try:
-            # [4] Bot pausado
+            # Bot pausado
             if PAUSED:
                 guardar_estado()
                 await asyncio.sleep(POLL_INTERVAL * 2)
-                continue
-
-            # [4] Salta el primer ciclo tras activación
-            if primer_ciclo:
-                log_ev("Primer ciclo omitido — sincronizando")
-                primer_ciclo = False
-                await asyncio.sleep(POLL_INTERVAL)
                 continue
 
             # 1. Descubrir mercado
@@ -704,6 +700,13 @@ async def main_loop():
                 ya_opero_ciclo = False
                 mkt = await loop.run_in_executor(None, find_active_market, "BTC")
                 if mkt:
+                    # Fiel a prod: salta el primer mercado encontrado tras activar
+                    if saltar_primer_mkt:
+                        log_ev(f"Mercado encontrado (saltado): {mkt.get('question', '')} — siguiente ciclo sera el primero")
+                        saltar_primer_mkt = False
+                        mkt = None
+                        await asyncio.sleep(POLL_INTERVAL)
+                        continue
                     estado["ciclos"] += 1
                     mkt_end_date = mkt.get("end_date")
                     log_ev(f"Mercado: {mkt.get('question', '')}")
