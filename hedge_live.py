@@ -358,38 +358,17 @@ def forzar_salida(
     shares: float,
     usd_original: float,
     m: dict,
-    secs: float | None,
     razon: str = "",
 ) -> tuple[float, float]:
     """
-    [4] Salida con precio escalonado: bid → bid-0.02 → bid-0.05.
-    Guard MIN_HOLD_SECS: no sale si lleva menos de 10s en posición.
-    Guard NEAR_RESOLUTION_THRESH: no vende si bid >= 0.82 y secs <= 90.
-    En simulación elige el mejor precio disponible del escalado.
-    Retorna (exit_precio, pnl) o (0.0, 0.0) si guard bloqueó la salida.
+    Ejecuta la salida al bid actual.
+    Los guards (MIN_HOLD_SECS, NEAR_RESOLUTION_THRESH) ya fueron validados
+    en intentar_early_exit() — fiel a la arquitectura de produccion.
+    Retorna (exit_precio, pnl).
     """
-    # [4] Guard MIN_HOLD_SECS
-    secs_en_pos = time.time() - pos["ts_entrada"] if pos["ts_entrada"] else 999
-    if secs_en_pos < MIN_HOLD_SECS:
-        return 0.0, 0.0  # guard activo — no salir todavía
-
-    bid = m["best_bid"]
-
-    # [4] Guard NEAR_RESOLUTION_THRESH
-    if bid >= NEAR_RESOLUTION_THRESH and secs is not None and secs <= NEAR_RESOLUTION_SECS:
-        log_ev(f"  NEAR_RESOLUTION guard: bid={bid:.3f} >= {NEAR_RESOLUTION_THRESH} "
-               f"con {int(secs)}s — omitiendo venta")
-        return 0.0, 0.0  # guard activo
-
-    # Escalado de precio fiel a produccion:
-    # intentos 1-5: bid exacto
-    # intentos 6-10: bid - 0.02
-    # intentos 11+:  bid - 0.05
-    # En sim no hay reintentos reales, pero simulamos que la primera venta
-    # exitosa ocurre al bid (escenario normal sin congestion de mercado).
+    bid         = m["best_bid"]
     exit_precio = max(round(bid, 4), 0.01)
-
-    pnl = round(shares * exit_precio - usd_original, 4)
+    pnl         = round(shares * exit_precio - usd_original, 4)
     log_ev(f"  EXIT @ {exit_precio:.4f} (bid={bid:.4f}) | {razon}")
     return exit_precio, pnl
 
@@ -486,12 +465,12 @@ def intentar_hedge(up_m, dn_m):
     if obi_lado2 < HEDGE_OBI_MIN:
         return
 
-    # v8: rango óptimo hedge [0.25-0.35]
-    mid_lado2 = mid(m_lado2)
-    if mid_lado2 <= 0 or mid_lado2 < HEDGE_PRECIO_MIN or mid_lado2 > HEDGE_PRECIO_MAX:
+    # Fiel a prod: valida rango con best_ask (no mid) — prod compra taker al ask
+    ask_lado2 = m_lado2["best_ask"]
+    if ask_lado2 <= 0 or ask_lado2 < HEDGE_PRECIO_MIN or ask_lado2 > HEDGE_PRECIO_MAX:
         return
 
-    log_ev(f"  Lado1 subio {subida*100:+.1f}c — hedgeando en {lado2} @ mid={mid_lado2:.4f}")
+    log_ev(f"  Lado1 subio {subida*100:+.1f}c — hedgeando en {lado2} @ ask={ask_lado2:.4f}")
 
     precio, shares, usd = comprar(lado2, m_lado2)
     if usd == 0.0:
@@ -521,6 +500,13 @@ def intentar_early_exit(up_m, dn_m, secs):
     secs_en_pos = time.time() - pos["ts_entrada"] if pos["ts_entrada"] else 0
     caida       = pos["lado1_precio"] - bid_lado1
 
+    # Fiel a prod: guards en la capa de decision (no en forzar_salida)
+    if secs_en_pos < MIN_HOLD_SECS:
+        return
+
+    if bid_lado1 >= NEAR_RESOLUTION_THRESH and secs is not None and secs <= NEAR_RESOLUTION_SECS:
+        return
+
     razon = None
     if secs_en_pos > EARLY_EXIT_SECS:
         razon = f"timeout {int(secs_en_pos)}s sin hedge"
@@ -532,17 +518,12 @@ def intentar_early_exit(up_m, dn_m, secs):
     if not razon:
         return
 
-    # [4] forzar_salida con guards y escalado
     exit_precio, pnl = forzar_salida(
         pos["lado1_shares"],
         pos["lado1_usd"],
         m_lado1,
-        secs,
         razon,
     )
-
-    if exit_precio == 0.0 and pnl == 0.0:
-        return  # guard activo (MIN_HOLD o NEAR_RESOLUTION)
 
     estado["capital"]   += pos["lado1_usd"] + pnl
     estado["pnl_total"] += pnl
