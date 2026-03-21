@@ -842,7 +842,7 @@ if __name__ == "__main__":
                         f"W:{st.get('wins',0)} L:{st.get('losses',0)}</pre></body></html>"
                     ).encode()
                 except Exception:
-                    body = b"<html><body>HEDGE LIVE v9 — OK</body></html>"
+                    body = b"<html><body>HEDGE LIVE v9 - OK</body></html>"
                 self._send(200, "text/html; charset=utf-8", body)
 
         def _serve_status(self):
