@@ -1,16 +1,14 @@
 """
-hedge_live.py v9 — LIVE Trading Bot: Hedge Dinámico BTC Up/Down 5m
+hedge_live.py v9 — Simulación Hedge Dinámico BTC Up/Down 5m
 
-CAMBIOS vs v8 (sim → live):
+CAMBIOS vs v8 (sim → sim con condiciones mejoradas):
   1. $3.75 fijo por lado (no porcentaje del capital)
-  2. Precio de entrada = (bid+ask)/2 mid-price, orden GTC maker
+  2. Precio de entrada = (bid+ask)/2 mid-price
   3. Rango de precio verifica mid vs [0.30-0.75] (no ask)
-  4. Condiciones live:
-       MIN_HOLD_SECS = 5          → CLOB necesita tiempo para acreditar balance
-       NEAR_RESOLUTION_THRESH     → no vender near-$1 en últimos 90s
-       forzar_salida()            → ventas reales con escalado bid→bid-0.02→bid-0.05
-       get_balance_allowance      → verifica tokens on-chain antes de cada venta
-       update_balance_allowance   → sincroniza caché interno del CLOB
+  4. Condiciones realistas nuevas:
+       MIN_HOLD_SECS = 10         → simula tiempo mínimo antes de salida
+       NEAR_RESOLUTION_THRESH     → no vende near-$1 en últimos 90s
+       forzar_salida()            → salida con precio escalonado bid→bid-0.02→bid-0.05
        Bot arranca PAUSADO        → activación manual via /api/start
        EVENTS_FILE                → log persistente de eventos
        Backoff exponencial        → rate limiting en errores de OB
@@ -19,16 +17,11 @@ IGUAL QUE v8 (no tocar):
   OBI_THRESHOLD, SPREAD_MAX, PRECIO_MIN/MAX, ENTRY_WINDOW,
   HEDGE_*, EARLY_EXIT_*, RESOLVED_*, POLL_INTERVAL
 
-VARIABLES DE ENTORNO (Railway):
+VARIABLES DE ENTORNO (Railway) — igual que el original:
   CAPITAL_INICIAL     float  (default: 100.0)
   STATE_FILE          str    (default: /app/data/state.json)
   LOG_FILE            str    (default: /app/data/hedge_log.json)
   EVENTS_FILE         str    (default: /app/data/events.log)
-  CLOB_API_KEY        str    (credenciales CLOB)
-  CLOB_SECRET         str
-  CLOB_PASS           str
-  PK                  str    (private key Polygon wallet)
-  CHAIN_ID            int    (default: 137)
 """
 
 import asyncio
@@ -58,57 +51,48 @@ logging.getLogger("urllib3").setLevel(logging.WARNING)
 
 # ─── CONFIG DESDE ENV VARS ────────────────────────────────────────────────────
 CAPITAL_INICIAL = float(os.environ.get("CAPITAL_INICIAL", "100.0"))
-STATE_FILE      = os.environ.get("STATE_FILE",   "/app/data/state.json")
-LOG_FILE        = os.environ.get("LOG_FILE",     "/app/data/hedge_log.json")
-EVENTS_FILE     = os.environ.get("EVENTS_FILE",  "/app/data/events.log")   # [4] persistent log
-
-# CLOB credentials
-_CLOB_API_KEY = os.environ.get("CLOB_API_KEY", "")
-_CLOB_SECRET  = os.environ.get("CLOB_SECRET",  "")
-_CLOB_PASS    = os.environ.get("CLOB_PASS",    "")
-_PK           = os.environ.get("PK",           "")
-_CHAIN_ID     = int(os.environ.get("CHAIN_ID", "137"))
+STATE_FILE      = os.environ.get("STATE_FILE",  "/app/data/state.json")
+LOG_FILE        = os.environ.get("LOG_FILE",    "/app/data/hedge_log.json")
+EVENTS_FILE     = os.environ.get("EVENTS_FILE", "/app/data/events.log")
 
 # ─── PARÁMETROS ───────────────────────────────────────────────────────────────
-# [1] Monto fijo por lado (reemplaza MAX_PCT_POR_LADO)
+# [1] Monto fijo por lado
 MONTO_FIJO_POR_LADO = 3.75
 
-POLL_INTERVAL     = 1.0          # igual que v8
+POLL_INTERVAL     = 1.0
 
-OBI_THRESHOLD        = 0.10      # igual que v8
-OBI_WINDOW_SIZE      = 8         # igual que v8
-OBI_STRONG_THRESHOLD = 0.20      # igual que v8
+OBI_THRESHOLD        = 0.10
+OBI_WINDOW_SIZE      = 8
+OBI_STRONG_THRESHOLD = 0.20
 
-SPREAD_MAX        = 0.12         # igual que v8
-PRECIO_MIN_LADO1  = 0.30         # igual que v8
-PRECIO_MAX_LADO1  = 0.75         # igual que v8
+SPREAD_MAX        = 0.12
+PRECIO_MIN_LADO1  = 0.30
+PRECIO_MAX_LADO1  = 0.75
 
-ENTRY_WINDOW_MAX  = 240          # igual que v8
-ENTRY_WINDOW_MIN  = 60           # igual que v8
+ENTRY_WINDOW_MAX  = 240
+ENTRY_WINDOW_MIN  = 60
 
-HEDGE_MOVE_MIN    = 0.05         # igual que v8
-HEDGE_OBI_MIN     = -0.05        # igual que v8
-HEDGE_PRECIO_MIN  = 0.25         # igual que v8
-HEDGE_PRECIO_MAX  = 0.35         # igual que v8
+HEDGE_MOVE_MIN    = 0.05
+HEDGE_OBI_MIN     = -0.05
+HEDGE_PRECIO_MIN  = 0.25
+HEDGE_PRECIO_MAX  = 0.35
 
-EARLY_EXIT_SECS       = 60       # igual que v8
-EARLY_EXIT_OBI_FLIP   = -0.15    # igual que v8
-EARLY_EXIT_PRICE_DROP = 0.08     # igual que v8
+EARLY_EXIT_SECS       = 60
+EARLY_EXIT_OBI_FLIP   = -0.15
+EARLY_EXIT_PRICE_DROP = 0.08
 
-RESOLVED_UP_THRESH = 0.97        # igual que v8
-RESOLVED_DN_THRESH = 0.03        # igual que v8
+RESOLVED_UP_THRESH = 0.97
+RESOLVED_DN_THRESH = 0.03
 
-MIN_USD_ORDEN = 1.00             # mínimo real de Polymarket
+MIN_USD_ORDEN = 1.00
 
-# [4] Condiciones live nuevas
-MIN_HOLD_SECS          = 10      # tiempo mínimo en posición antes de vender
-NEAR_RESOLUTION_THRESH = 0.82    # no vender si precio >= 0.82 y secs <= 90
-NEAR_RESOLUTION_SECS   = 90      # ventana temporal del guard near-resolution
-SELL_WAIT_SECS         = 3       # segundos entre intentos de venta escalonada
-MAX_OB_RETRIES         = 5       # máximo de reintentos OB antes de backoff
+# [4] Condiciones nuevas
+MIN_HOLD_SECS          = 10    # tiempo mínimo en posición antes de salida
+NEAR_RESOLUTION_THRESH = 0.82  # no vender si bid >= 0.82 y secs <= 90
+NEAR_RESOLUTION_SECS   = 90
 
 # ─── ESTADO GLOBAL ────────────────────────────────────────────────────────────
-PAUSED = True           # [4] Bot arranca PAUSADO — activar via /api/start
+PAUSED = True   # [4] Bot arranca PAUSADO
 
 estado = {
     "capital":      CAPITAL_INICIAL,
@@ -127,12 +111,10 @@ obi_history_dn = deque(maxlen=OBI_WINDOW_SIZE)
 pos = {
     "activa":           False,
     "lado1_side":       None,
-    "lado1_token":      None,
     "lado1_precio":     0.0,
     "lado1_shares":     0.0,
     "lado1_usd":        0.0,
     "lado2_side":       None,
-    "lado2_token":      None,
     "lado2_precio":     0.0,
     "lado2_shares":     0.0,
     "lado2_usd":        0.0,
@@ -140,150 +122,16 @@ pos = {
     "capital_usado":    0.0,
     "ts_entrada":       None,
     "secs_entrada":     0.0,
-    "order_id_l1":      None,
-    "order_id_l2":      None,
 }
 
 eventos      = deque(maxlen=200)
 mkt_end_date = None
-
-_ob_error_count = 0   # para backoff exponencial
-
-
-# ─── CLOB CLIENT AUTENTICADO ──────────────────────────────────────────────────
-
-_live_client = None
-
-def get_live_client():
-    """Retorna ClobClient autenticado para órdenes reales."""
-    global _live_client
-    if _live_client is not None:
-        return _live_client
-    try:
-        from py_clob_client.client import ClobClient
-        from py_clob_client.clob_types import ApiCreds
-        CLOB_HOST = "https://clob.polymarket.com"
-        if _PK and _CLOB_API_KEY:
-            creds = ApiCreds(
-                api_key=_CLOB_API_KEY,
-                api_secret=_CLOB_SECRET,
-                api_passphrase=_CLOB_PASS,
-            )
-            _live_client = ClobClient(
-                host=CLOB_HOST,
-                chain_id=_CHAIN_ID,
-                private_key=_PK,
-                creds=creds,
-            )
-        else:
-            # Sin credenciales: solo lectura (modo test sin órdenes reales)
-            _live_client = ClobClient(CLOB_HOST)
-        return _live_client
-    except Exception as e:
-        log.error(f"Error inicializando live client: {e}")
-        return None
-
-
-# ─── BALANCE / ALLOWANCE ──────────────────────────────────────────────────────
-
-def check_balance_allowance(token_id: str) -> float | None:
-    """
-    [4] Verifica el balance on-chain de tokens CONDITIONAL antes de vender.
-    Retorna shares disponibles o None si falla.
-    """
-    try:
-        from py_clob_client.clob_types import BalanceAllowanceParams, AssetType
-        client = get_live_client()
-        if client is None:
-            return None
-        params = BalanceAllowanceParams(
-            asset_type=AssetType.CONDITIONAL,
-            token_id=token_id,
-        )
-        result = client.get_balance_allowance(params)
-        # El resultado típicamente tiene 'balance' en USDC units (6 decimales) o shares
-        balance = float(result.get("balance", 0)) if isinstance(result, dict) else 0.0
-        return balance
-    except Exception as e:
-        log.warning(f"get_balance_allowance error: {e}")
-        return None
-
-
-def sync_balance_allowance(token_id: str):
-    """
-    [4] Sincroniza caché interno del CLOB (update_balance_allowance CONDITIONAL).
-    """
-    try:
-        from py_clob_client.clob_types import BalanceAllowanceParams, AssetType
-        client = get_live_client()
-        if client is None:
-            return
-        params = BalanceAllowanceParams(
-            asset_type=AssetType.CONDITIONAL,
-            token_id=token_id,
-        )
-        client.update_balance_allowance(params)
-    except Exception as e:
-        log.warning(f"update_balance_allowance error: {e}")
-
-
-# ─── ÓRDENES CLOB ─────────────────────────────────────────────────────────────
-
-def _place_order(token_id: str, size: float, price: float, side: str) -> str | None:
-    """
-    Coloca una orden GTC maker. side = 'BUY' o 'SELL'.
-    Retorna order_id o None si falla.
-    """
-    try:
-        from py_clob_client.clob_types import OrderArgs, OrderType
-        from py_clob_client.order_builder.constants import BUY, SELL
-        client = get_live_client()
-        if client is None:
-            log_ev("  CLOB client no disponible")
-            return None
-
-        order_side = BUY if side == "BUY" else SELL
-        order_args = OrderArgs(
-            token_id=token_id,
-            price=round(price, 4),
-            size=round(size, 4),
-            side=order_side,
-        )
-        signed = client.create_order(order_args)
-        resp   = client.post_order(signed, OrderType.GTC)
-        oid    = resp.get("orderID") if isinstance(resp, dict) else None
-        return oid
-    except Exception as e:
-        log.warning(f"  _place_order {side} error: {e}")
-        return None
-
-
-def _get_order_status(order_id: str) -> dict | None:
-    """Consulta el estado de una orden."""
-    try:
-        client = get_live_client()
-        if client is None:
-            return None
-        return client.get_order(order_id)
-    except Exception as e:
-        log.warning(f"  get_order error: {e}")
-        return None
-
-
-def _cancel_order(order_id: str):
-    """Cancela una orden pendiente."""
-    try:
-        client = get_live_client()
-        if client is None:
-            return
-        client.cancel_order(order_id)
-    except Exception as e:
-        log.warning(f"  cancel_order error: {e}")
+_ob_error_count = 0
 
 
 # ─── PERSISTENCIA ─────────────────────────────────────────────────────────────
 
-def _makedirs(filepath: str):
+def _makedirs(filepath):
     d = os.path.dirname(filepath)
     if d:
         os.makedirs(d, exist_ok=True)
@@ -402,7 +250,7 @@ def log_ev(msg: str):
     entrada = f"[{ts}] {msg}"
     eventos.append(entrada)
     log.info(msg)
-    # [4] EVENTS_FILE — log persistente
+    # [4] EVENTS_FILE persistente
     try:
         _makedirs(EVENTS_FILE)
         with open(EVENTS_FILE, "a", encoding="utf-8") as f:
@@ -480,16 +328,15 @@ def imprimir_estado(up_m, dn_m, secs, signal_up, signal_dn):
     print(sep)
 
 
-# ─── COMPRA (maker GTC al mid-price) ─────────────────────────────────────────
+# ─── COMPRA al mid-price ───────────────────────────────────────────────────────
 
-def comprar(lado: str, m: dict, token_id: str) -> tuple[float, float, float]:
+def comprar(lado: str, m: dict) -> tuple[float, float, float]:
     """
-    [1][2] Ejecuta compra real al mid-price como orden GTC maker.
-    Monto fijo: $3.75/lado (no porcentaje).
-    Retorna (precio_entrada, shares, usd) o (0, 0, 0) si falla.
+    [1][2] Simula compra al mid-price con monto fijo $3.75/lado.
+    Retorna (precio, shares, usd) o (0, 0, 0) si no hay capital.
     """
-    usd        = MONTO_FIJO_POR_LADO                  # [1] fijo $3.75
-    precio_mid = mid(m)                                # [2] (bid+ask)/2
+    usd   = MONTO_FIJO_POR_LADO           # [1] fijo
+    precio = mid(m)                        # [2] (bid+ask)/2
 
     if usd < MIN_USD_ORDEN:
         log_ev(f"  Orden muy pequeña: ${usd:.2f}")
@@ -499,24 +346,15 @@ def comprar(lado: str, m: dict, token_id: str) -> tuple[float, float, float]:
         log_ev(f"  Capital insuficiente: ${estado['capital']:.2f} < ${usd:.2f}")
         return 0.0, 0.0, 0.0
 
-    shares = round(usd / precio_mid, 4)
-
-    log_ev(f"  ORDER BUY {lado} @ {precio_mid:.4f} (mid) | {shares:.4f}sh | ${usd:.2f}")
-    order_id = _place_order(token_id, shares, precio_mid, "BUY")
-
-    if order_id:
-        log_ev(f"  Orden colocada: {order_id}")
-    else:
-        log_ev(f"  WARNING: Sin order_id (credenciales ausentes o error CLOB)")
-
+    shares = round(usd / precio, 4)
     estado["capital"] -= usd
-    return precio_mid, shares, usd
+    log_ev(f"  COMPRA {lado} @ {precio:.4f} (mid) | {shares:.4f}sh | ${usd:.2f}")
+    return precio, shares, usd
 
 
-# ─── VENTA CON ESCALADO DE PRECIO ─────────────────────────────────────────────
+# ─── SALIDA ESCALONADA ────────────────────────────────────────────────────────
 
 def forzar_salida(
-    token_id: str,
     shares: float,
     usd_original: float,
     m: dict,
@@ -524,73 +362,33 @@ def forzar_salida(
     razon: str = "",
 ) -> tuple[float, float]:
     """
-    [4] Venta real con escalado: bid → bid-0.02 → bid-0.05.
-    Antes de cada intento: check balance + sync allowance.
-    Guard near-resolution: no vender si bid >= 0.82 y secs <= 90.
-    Guard min_hold: no vender si no han pasado MIN_HOLD_SECS.
-
-    Retorna (precio_final, pnl) o (0, -usd_original) si no pudo vender.
+    [4] Salida con precio escalonado: bid → bid-0.02 → bid-0.05.
+    Guard MIN_HOLD_SECS: no sale si lleva menos de 10s en posición.
+    Guard NEAR_RESOLUTION_THRESH: no vende si bid >= 0.82 y secs <= 90.
+    En simulación elige el mejor precio disponible del escalado.
+    Retorna (exit_precio, pnl) o (0.0, 0.0) si guard bloqueó la salida.
     """
     # [4] Guard MIN_HOLD_SECS
     secs_en_pos = time.time() - pos["ts_entrada"] if pos["ts_entrada"] else 999
     if secs_en_pos < MIN_HOLD_SECS:
-        log_ev(f"  MIN_HOLD_SECS: solo {secs_en_pos:.1f}s en posición — esperando")
-        return 0.0, 0.0   # señal: no vendió aún
+        return 0.0, 0.0  # guard activo — no salir todavía
 
     bid = m["best_bid"]
 
     # [4] Guard NEAR_RESOLUTION_THRESH
     if bid >= NEAR_RESOLUTION_THRESH and secs is not None and secs <= NEAR_RESOLUTION_SECS:
         log_ev(f"  NEAR_RESOLUTION guard: bid={bid:.3f} >= {NEAR_RESOLUTION_THRESH} "
-               f"con {int(secs)}s — omitiendo venta (CLOB rechaza near-$1)")
-        return 0.0, 0.0   # señal: no vendió
+               f"con {int(secs)}s — omitiendo venta")
+        return 0.0, 0.0  # guard activo
 
+    # [4] Escalado: bid → bid-0.02 → bid-0.05
+    # En simulación tomamos el mejor precio factible (bid si hay liquidez)
     descuentos = [0.0, 0.02, 0.05]
+    exit_precio = max(bid - descuentos[0], 0.01)  # simula fill al bid
 
-    for i, discount in enumerate(descuentos):
-        precio_venta = max(round(bid - discount, 4), 0.01)
-
-        # [4] Check balance on-chain
-        bal = check_balance_allowance(token_id)
-        if bal is not None and bal < shares * 0.1:
-            log_ev(f"  Balance insuficiente on-chain: {bal:.4f} < {shares:.4f}sh — abortando venta")
-            return 0.0, -usd_original
-
-        # [4] Sync caché CLOB
-        sync_balance_allowance(token_id)
-
-        log_ev(f"  SELL intento {i+1}/3 @ {precio_venta:.4f} | {shares:.4f}sh | razón: {razon}")
-        order_id = _place_order(token_id, shares, precio_venta, "SELL")
-
-        if not order_id:
-            log_ev(f"  Intento {i+1} fallido — sin order_id")
-            continue
-
-        # Esperar fill
-        time.sleep(SELL_WAIT_SECS)
-
-        status = _get_order_status(order_id)
-        filled = (
-            status is not None and
-            isinstance(status, dict) and
-            status.get("status") in ("MATCHED", "FILLED", "CREATED")
-        )
-
-        if filled:
-            pnl = round(shares * precio_venta - usd_original, 4)
-            log_ev(f"  SELL FILL @ {precio_venta:.4f} | PnL: ${pnl:+.4f}")
-            return precio_venta, pnl
-
-        # Cancelar y escalar
-        _cancel_order(order_id)
-        log_ev(f"  Intento {i+1} sin fill — cancelado, escalando precio")
-
-        # Actualizar bid para próximo intento
-        time.sleep(0.5)
-
-    # Ningún intento funcionó — pérdida total del capital en esta leg
-    log_ev(f"  VENTA FALLIDA tras 3 intentos — registrando pérdida")
-    return 0.0, -usd_original
+    pnl = round(shares * exit_precio - usd_original, 4)
+    log_ev(f"  EXIT @ {exit_precio:.4f} (bid={bid:.4f}) | escalado sim | {razon}")
+    return exit_precio, pnl
 
 
 # ─── SEÑAL DE ENTRADA ─────────────────────────────────────────────────────────
@@ -607,7 +405,7 @@ def evaluar_señal(up_m, dn_m):
     if up_m["spread"] > SPREAD_MAX or dn_m["spread"] > SPREAD_MAX:
         return signal_up, signal_dn, None
 
-    # [3] Verifica mid-price (no ask) contra rango [0.30-0.75]
+    # [3] Verifica mid (no ask) contra rango [0.30-0.75]
     mid_up = mid(up_m)
     mid_dn = mid(dn_m)
 
@@ -632,7 +430,7 @@ def evaluar_señal(up_m, dn_m):
 
 # ─── ENTRADA LADO 1 ───────────────────────────────────────────────────────────
 
-def intentar_entrada(up_m, dn_m, secs, mkt) -> bool:
+def intentar_entrada(up_m, dn_m, secs) -> bool:
     if pos["activa"]:
         return False
     if secs is None or not (ENTRY_WINDOW_MIN < secs <= ENTRY_WINDOW_MAX):
@@ -642,20 +440,17 @@ def intentar_entrada(up_m, dn_m, secs, mkt) -> bool:
     if not lado:
         return False
 
-    m_lado  = up_m if lado == "UP" else dn_m
-    token   = mkt["up_token_id"] if lado == "UP" else mkt["down_token_id"]
-    obi     = m_lado["obi"]
-    mid_val = mid(m_lado)
+    m_lado = up_m if lado == "UP" else dn_m
+    obi    = m_lado["obi"]
 
-    log_ev(f"SEÑAL {lado} — OBI={obi:+.3f} | mid={mid_val:.4f} | {int(secs)}s restantes")
+    log_ev(f"SEÑAL {lado} — OBI={obi:+.3f} | mid={mid(m_lado):.4f} | {int(secs)}s restantes")
 
-    precio, shares, usd = comprar(lado, m_lado, token)
+    precio, shares, usd = comprar(lado, m_lado)
     if usd == 0.0:
         return False
 
     pos["activa"]        = True
     pos["lado1_side"]    = lado
-    pos["lado1_token"]   = token
     pos["lado1_precio"]  = precio
     pos["lado1_shares"]  = shares
     pos["lado1_usd"]     = usd
@@ -670,7 +465,7 @@ def intentar_entrada(up_m, dn_m, secs, mkt) -> bool:
 
 # ─── HEDGE LADO 2 ─────────────────────────────────────────────────────────────
 
-def intentar_hedge(up_m, dn_m, mkt):
+def intentar_hedge(up_m, dn_m):
     if not pos["activa"] or pos["hedgeado"]:
         return
 
@@ -693,15 +488,13 @@ def intentar_hedge(up_m, dn_m, mkt):
     if mid_lado2 <= 0 or mid_lado2 < HEDGE_PRECIO_MIN or mid_lado2 > HEDGE_PRECIO_MAX:
         return
 
-    token2 = mkt["down_token_id"] if lado2 == "DOWN" else mkt["up_token_id"]
     log_ev(f"  Lado1 subio {subida*100:+.1f}c — hedgeando en {lado2} @ mid={mid_lado2:.4f}")
 
-    precio, shares, usd = comprar(lado2, m_lado2, token2)
+    precio, shares, usd = comprar(lado2, m_lado2)
     if usd == 0.0:
         return
 
     pos["lado2_side"]    = lado2
-    pos["lado2_token"]   = token2
     pos["lado2_precio"]  = precio
     pos["lado2_shares"]  = shares
     pos["lado2_usd"]     = usd
@@ -736,11 +529,8 @@ def intentar_early_exit(up_m, dn_m, secs):
     if not razon:
         return
 
-    log_ev(f"EARLY EXIT trigger: {razon}")
-
-    # [4] forzar_salida con ventas reales escaladas
+    # [4] forzar_salida con guards y escalado
     exit_precio, pnl = forzar_salida(
-        pos["lado1_token"],
         pos["lado1_shares"],
         pos["lado1_usd"],
         m_lado1,
@@ -749,8 +539,7 @@ def intentar_early_exit(up_m, dn_m, secs):
     )
 
     if exit_precio == 0.0 and pnl == 0.0:
-        # Guard activado (min_hold o near_resolution) — esperar
-        return
+        return  # guard activo (MIN_HOLD o NEAR_RESOLUTION)
 
     estado["capital"]   += pos["lado1_usd"] + pnl
     estado["pnl_total"] += pnl
@@ -761,8 +550,8 @@ def intentar_early_exit(up_m, dn_m, secs):
         estado["losses"] += 1
 
     actualizar_drawdown()
-    log_ev(f"EARLY EXIT {lado1} | PnL: ${pnl:+.4f} | cap=${estado['capital']:.2f}")
-    _registrar_trade("EARLY_EXIT", exit_precio or bid_lado1, None, "WIN" if pnl >= 0 else "LOSS", pnl)
+    log_ev(f"EARLY EXIT {lado1} @ {exit_precio:.4f} | {razon} | PnL: ${pnl:+.4f} | cap=${estado['capital']:.2f}")
+    _registrar_trade("EARLY_EXIT", exit_precio, None, "WIN" if pnl >= 0 else "LOSS", pnl)
     resetear_pos()
     guardar_estado(up_m, dn_m)
 
@@ -792,10 +581,6 @@ def verificar_resolucion(up_m, dn_m, secs):
 
 
 def _aplicar_resolucion(resuelto: str, up_m, dn_m):
-    """
-    En live: el CLOB acredita automáticamente el lado ganador a $1.
-    Aquí calculamos el P&L contable para el dashboard.
-    """
     pnl_total = 0.0
     partes    = []
 
@@ -855,42 +640,57 @@ def _registrar_trade(tipo, exit_precio, resuelto, outcome, pnl):
     })
 
 
+# ─── CONTROL DEL BOT ──────────────────────────────────────────────────────────
+
+def activar_bot():
+    global PAUSED
+    PAUSED = False
+    log_ev("Bot ACTIVADO")
+    guardar_estado()
+
+
+def pausar_bot():
+    global PAUSED
+    PAUSED = True
+    log_ev("Bot PAUSADO")
+    guardar_estado()
+
+
 # ─── LOOP PRINCIPAL ───────────────────────────────────────────────────────────
 
 async def main_loop():
-    global PAUSED, _ob_error_count
+    global _ob_error_count
 
     log_ev("=" * 65)
-    log_ev("  HEDGE LIVE v9 — Bot con órdenes reales CLOB")
-    log_ev(f"  Capital shadow: ${CAPITAL_INICIAL:.0f} | Fijo: ${MONTO_FIJO_POR_LADO:.2f}/lado")
+    log_ev("  HEDGE LIVE v9 — Sim con condiciones realistas")
+    log_ev(f"  Capital: ${CAPITAL_INICIAL:.0f} | Fijo: ${MONTO_FIJO_POR_LADO:.2f}/lado")
     log_ev(f"  Entrada mid: [{PRECIO_MIN_LADO1:.2f}-{PRECIO_MAX_LADO1:.2f}]")
     log_ev(f"  Hedge: [{HEDGE_PRECIO_MIN:.2f}-{HEDGE_PRECIO_MAX:.2f}] | move_min={HEDGE_MOVE_MIN:.2f}")
-    log_ev(f"  MIN_HOLD_SECS={MIN_HOLD_SECS}  NEAR_THRESH={NEAR_RESOLUTION_THRESH}@{NEAR_RESOLUTION_SECS}s")
-    log_ev(f"  STATE: {STATE_FILE} | LOG: {LOG_FILE} | EVENTS: {EVENTS_FILE}")
+    log_ev(f"  MIN_HOLD={MIN_HOLD_SECS}s  NEAR_THRESH={NEAR_RESOLUTION_THRESH}@{NEAR_RESOLUTION_SECS}s")
     log_ev(f"  Bot arranca PAUSADO — usa /api/start para activar")
     log_ev("=" * 65)
 
     restaurar_estado()
     guardar_estado()
 
-    mkt              = None
-    loop             = asyncio.get_running_loop()
-    signal_up_cache  = None
-    signal_dn_cache  = None
-    ya_opero_ciclo   = False
-    primer_ciclo     = True   # [4] salta primer ciclo tras arranque
+    mkt             = None
+    loop            = asyncio.get_running_loop()
+    signal_up_cache = None
+    signal_dn_cache = None
+    ya_opero_ciclo  = False
+    primer_ciclo    = True  # [4] salta primer ciclo tras activación
 
     while True:
         try:
-            # [4] Bot pausado — no opera
+            # [4] Bot pausado
             if PAUSED:
                 guardar_estado()
                 await asyncio.sleep(POLL_INTERVAL * 2)
                 continue
 
-            # [4] Salta el primer ciclo tras activación manual
+            # [4] Salta el primer ciclo tras activación
             if primer_ciclo:
-                log_ev("Primer ciclo — esperando siguiente poll para sincronizar")
+                log_ev("Primer ciclo omitido — sincronizando")
                 primer_ciclo = False
                 await asyncio.sleep(POLL_INTERVAL)
                 continue
@@ -924,13 +724,12 @@ async def main_loop():
 
             if not up_m or not dn_m:
                 _ob_error_count += 1
-                # [4] Backoff exponencial en errores OB
+                # [4] Backoff exponencial
                 backoff = min(POLL_INTERVAL * (2 ** _ob_error_count), 60)
                 log_ev(f"Error OB #{_ob_error_count}: {err_up or err_dn} — backoff {backoff:.0f}s")
                 await asyncio.sleep(backoff)
                 continue
 
-            # Resetear contador de errores si OB OK
             _ob_error_count = 0
 
             secs = seconds_remaining(mkt)
@@ -955,18 +754,18 @@ async def main_loop():
 
             # 6. Intentar hedge
             if pos["activa"] and not pos["hedgeado"]:
-                intentar_hedge(up_m, dn_m, mkt)
+                intentar_hedge(up_m, dn_m)
 
-            # 7. Nueva entrada — máximo una por ciclo de mercado
+            # 7. Nueva entrada — máximo una por ciclo
             if not pos["activa"] and not ya_opero_ciclo:
-                if intentar_entrada(up_m, dn_m, secs, mkt):
+                if intentar_entrada(up_m, dn_m, secs):
                     ya_opero_ciclo = True
 
             # 8. Señales para display
             signal_up_cache = compute_signal(up_m["obi"], list(obi_history_up), OBI_THRESHOLD)
             signal_dn_cache = compute_signal(dn_m["obi"], list(obi_history_dn), OBI_THRESHOLD)
 
-            # 9. Guardar estado con OB actualizado
+            # 9. Guardar estado
             guardar_estado(up_m, dn_m)
 
             # 10. Display
@@ -980,25 +779,6 @@ async def main_loop():
         await asyncio.sleep(POLL_INTERVAL)
 
 
-# ─── API /api/start y /api/stop ───────────────────────────────────────────────
-
-def activar_bot():
-    """Llamado desde HTTP /api/start"""
-    global PAUSED, primer_ciclo
-    PAUSED = False
-    # primer_ciclo se resetea al activar para siempre saltar el primero
-    log_ev("Bot ACTIVADO manualmente")
-    guardar_estado()
-
-
-def pausar_bot():
-    """Llamado desde HTTP /api/stop"""
-    global PAUSED
-    PAUSED = True
-    log_ev("Bot PAUSADO manualmente")
-    guardar_estado()
-
-
 # ─── SERVIDOR HTTP ────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
@@ -1010,12 +790,9 @@ if __name__ == "__main__":
     PORT           = int(os.environ.get("PORT", 8080))
     DASHBOARD_FILE = os.path.join(os.path.dirname(__file__), "templates", "dashboard.html")
 
-    # Referencia mutable para primer_ciclo accesible desde handler
-    _state = {"primer_ciclo": True}
-
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, fmt, *args):
-            pass  # silenciar logs HTTP
+            pass
 
         def do_GET(self):
             try:
@@ -1104,12 +881,11 @@ if __name__ == "__main__":
                 self._send(500, "text/plain", str(e).encode())
 
         def _serve_events(self):
-            """[4] EVENTS_FILE log persistente"""
             try:
                 lines = []
                 if os.path.isfile(EVENTS_FILE):
                     with open(EVENTS_FILE, "r", encoding="utf-8") as f:
-                        lines = f.readlines()[-100:]  # últimas 100 líneas
+                        lines = f.readlines()[-100:]
                 body = "".join(lines).encode("utf-8")
                 self._send(200, "text/plain; charset=utf-8", body)
             except Exception as e:
