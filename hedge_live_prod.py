@@ -404,9 +404,11 @@ def forzar_salida(
         log_ev(f"  ERROR venta @ {exit_precio:.4f} | {result['error']} | {razon}")
         return exit_precio, 0.0, False
 
-    log_ev(f"  VENTA REAL @ {exit_precio:.4f} (bid={bid:.4f}) | {shares_a_vender:.2f}sh | orderID={result['orderID']} | {razon}")
-    pnl = round(shares_a_vender * exit_precio - usd_original, 4)
-    return exit_precio, pnl, True
+    # Usar precio real de fill si está disponible (puede ser mejor que el límite)
+    fill_price = result.get("fill_price") or exit_precio
+    pnl = round(shares_a_vender * fill_price - usd_original, 4)
+    log_ev(f"  VENTA REAL @ {fill_price:.4f} (limite={exit_precio:.4f} bid={bid:.4f}) | {shares_a_vender:.2f}sh | orderID={result['orderID']} | {razon}")
+    return fill_price, pnl, True
 
 
 # ─── SEÑAL DE ENTRADA ─────────────────────────────────────────────────────────
