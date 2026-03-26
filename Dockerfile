@@ -7,6 +7,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY strategy_core_prod.py .
 COPY hedge_live_prod.py .
+COPY templates/ templates/
 
 RUN mkdir -p /app/data
 
