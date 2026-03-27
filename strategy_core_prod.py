@@ -93,6 +93,10 @@ def place_taker_buy(token_id: str, shares: float, price: float) -> dict:
     Coloca una orden de compra taker (limit GTC al ask) por el token indicado.
     Usar precio=ask garantiza cruce inmediato como taker.
 
+    Después de postear la orden, hace polling durante 4s para verificar el fill real.
+    Si quedó parcialmente llenada, cancela el remanente y retorna las shares realmente
+    llenadas (size_matched) para evitar shares huérfanas y capital mal contabilizado.
+
     Parámetros:
       token_id — token ID de Polymarket (UP o DOWN)
       shares   — cantidad de shares a comprar (entry_usd / ask)
@@ -109,12 +113,44 @@ def place_taker_buy(token_id: str, shares: float, price: float) -> dict:
         )
         signed_order = client.create_order(order_args)
         resp         = client.post_order(signed_order, OrderType.GTC)
-        if resp and resp.get("orderID"):
-            return {"success": True, "orderID": resp["orderID"], "error": None, "raw": resp}
-        else:
-            return {"success": False, "orderID": None, "error": str(resp), "raw": resp}
+        if not resp or not resp.get("orderID"):
+            return {"success": False, "orderID": None, "shares_filled": 0.0, "error": str(resp), "raw": resp}
+
+        order_id = resp["orderID"]
+
+        # Polling fill durante 4s (cada 0.5s)
+        size_matched = 0.0
+        deadline = time.time() + 4.0
+        while time.time() < deadline:
+            time.sleep(0.5)
+            try:
+                info         = client.get_order(order_id)
+                status       = info.get("status", "")
+                size_matched = float(info.get("size_matched", 0) or 0)
+                if status in ("MATCHED", "FILLED") or size_matched >= round(shares, 2) * 0.95:
+                    break
+                if status == "CANCELLED":
+                    break
+            except Exception:
+                pass
+
+        # Cancelar remanente si el fill fue parcial
+        if size_matched > 0 and size_matched < round(shares, 2) * 0.95:
+            try:
+                client.cancel(order_id)
+            except Exception:
+                pass
+
+        filled = size_matched if size_matched > 0 else round(shares, 2)
+        return {
+            "success":       True,
+            "orderID":       order_id,
+            "shares_filled": round(filled, 2),
+            "error":         None,
+            "raw":           resp,
+        }
     except Exception as e:
-        return {"success": False, "orderID": None, "error": str(e), "raw": None}
+        return {"success": False, "orderID": None, "shares_filled": 0.0, "error": str(e), "raw": None}
 
 
 def place_taker_sell(token_id: str, shares: float, bid_price: float) -> dict:
