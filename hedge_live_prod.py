@@ -58,7 +58,7 @@ EVENTS_FILE     = os.environ.get("EVENTS_FILE", "/app/data/events.log")
 
 # ─── PARÁMETROS ───────────────────────────────────────────────────────────────
 MONTO_FIJO_POR_LADO  = float(os.environ.get("ENTRY_USD", "3.75"))
-POLL_INTERVAL        = 1.0
+POLL_INTERVAL        = 0.5
 OBI_THRESHOLD        = 0.10
 OBI_WINDOW_SIZE      = 8
 OBI_STRONG_THRESHOLD = 0.20
