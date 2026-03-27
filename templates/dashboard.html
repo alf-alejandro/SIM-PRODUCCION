@@ -344,7 +344,8 @@
             <th>Tipo</th>
             <th>Resolucion</th>
             <th>Lado 1</th>
-            <th>Precio L1</th>
+            <th>Entrada</th>
+            <th>Salida</th>
             <th>$L1</th>
             <th>Hedge</th>
             <th>$Hedge</th>
@@ -354,7 +355,7 @@
           </tr>
         </thead>
         <tbody id="trades-tbody">
-          <tr><td colspan="12" style="color:var(--muted);text-align:center;padding:20px">
+          <tr><td colspan="13" style="color:var(--muted);text-align:center;padding:20px">
             Sin trades todavia...
           </td></tr>
         </tbody>
@@ -558,6 +559,8 @@ function renderLog(eventos) {
     const eu = ev.toUpperCase();
     if (eu.includes('RESOLUCION') && eu.includes('WIN'))       cls += ' win';
     else if (eu.includes('RESOLUCION') && eu.includes('LOSS')) cls += ' loss';
+    else if (eu.includes('EARLY EXIT') && ev.includes('PnL: $+')) cls += ' win';
+    else if (eu.includes('EARLY EXIT') && ev.includes('PnL: $-')) cls += ' loss';
     else if (eu.includes('EARLY EXIT'))                        cls += ' loss';
     else if (eu.includes('ENTRADA') || eu.includes('SENAL'))   cls += ' entry';
     else if (eu.includes('HEDGE'))                             cls += ' entry';
@@ -570,7 +573,7 @@ function renderLog(eventos) {
 function updateTrades(trades) {
   const tbody = document.getElementById('trades-tbody');
   if (!trades.length) {
-    tbody.innerHTML = '<tr><td colspan="12" style="color:var(--muted);text-align:center;padding:20px">Sin trades todavia...</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="13" style="color:var(--muted);text-align:center;padding:20px">Sin trades todavia...</td></tr>';
     return;
   }
   tbody.innerHTML = trades.slice().reverse().map((t, i) => {
@@ -587,6 +590,7 @@ function updateTrades(trades) {
       '<td class="' + (gano?'td-win':'td-loss') + '">' + (t.resolucion||t.outcome||'-') + '</td>' +
       '<td style="color:' + l1c + '">' + (t.lado1_side||'-') + '</td>' +
       '<td>' + (t.lado1_precio ? t.lado1_precio.toFixed(3) : '-') + '</td>' +
+      '<td style="color:' + (gano?'var(--green)':'var(--red)') + '">' + (t.exit_precio ? t.exit_precio.toFixed(3) : '-') + '</td>' +
       '<td>$' + (t.lado1_usd||0).toFixed(2) + '</td>' +
       '<td style="color:' + l2c + '">' + (t.lado2_side||'-') + '</td>' +
       '<td>$' + (t.lado2_usd||0).toFixed(2) + '</td>' +
