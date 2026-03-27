@@ -822,6 +822,10 @@ async def main_loop():
                     estado["ciclos"] += 1
                     mkt_end_date = mkt.get("end_date")
                     log_ev(f"Mercado: {mkt.get('question', '')}")
+                    # Pre-calentar cache CLOB para ambos tokens — reduce delay de balance al vender
+                    approve_conditional_token(mkt["up_token_id"])
+                    approve_conditional_token(mkt["down_token_id"])
+                    log_ev("  Cache CLOB pre-aprobado (UP + DOWN)")
                     guardar_estado()
                 else:
                     log_ev("Sin mercado activo — reintentando en 10s...")
