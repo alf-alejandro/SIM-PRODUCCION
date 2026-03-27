@@ -134,18 +134,31 @@ def place_taker_buy(token_id: str, shares: float, price: float) -> dict:
             except Exception:
                 pass
 
-        # Cancelar remanente si el fill fue parcial
-        if size_matched > 0 and size_matched < round(shares, 2) * 0.95:
+        # Sin fill → cancelar orden y reportar fallo
+        if size_matched < round(shares, 2) * 0.10:
+            try:
+                client.cancel(order_id)
+            except Exception:
+                pass
+            return {
+                "success":       False,
+                "orderID":       order_id,
+                "shares_filled": 0.0,
+                "error":         f"sin fill tras 2s (size_matched={size_matched:.2f})",
+                "raw":           resp,
+            }
+
+        # Fill parcial → cancelar remanente
+        if size_matched < round(shares, 2) * 0.95:
             try:
                 client.cancel(order_id)
             except Exception:
                 pass
 
-        filled = size_matched if size_matched > 0 else round(shares, 2)
         return {
             "success":       True,
             "orderID":       order_id,
-            "shares_filled": round(filled, 2),
+            "shares_filled": round(size_matched, 2),
             "error":         None,
             "raw":           resp,
         }

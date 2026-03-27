@@ -929,6 +929,11 @@ if __name__ == "__main__":
             elif self.path == "/api/stop":
                 pausar_bot()
                 self._send(200, "application/json", b'{"ok":true,"msg":"Bot pausado"}')
+            elif self.path == "/api/reset":
+                resetear_pos()
+                log_ev("Posicion reseteada manualmente via /api/reset")
+                guardar_estado()
+                self._send(200, "application/json", b'{"ok":true,"msg":"Posicion reseteada"}')
             else:
                 self._send(404, "text/plain", b"Not found")
 
