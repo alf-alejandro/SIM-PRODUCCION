@@ -118,9 +118,11 @@ def place_taker_buy(token_id: str, shares: float, price: float) -> dict:
 
         order_id = resp["orderID"]
 
-        # Polling fill durante 4s (cada 0.5s) — taker al ask llena en <1s típicamente
+        # Polling fill: si en el primer check (0.5s) la orden está LIVE (maker),
+        # cancelar inmediatamente en lugar de esperar 4s bloqueando el loop.
         size_matched = 0.0
-        deadline = time.time() + 4.0
+        first_check  = True
+        deadline     = time.time() + 4.0
         while time.time() < deadline:
             time.sleep(0.5)
             try:
@@ -131,8 +133,12 @@ def place_taker_buy(token_id: str, shares: float, price: float) -> dict:
                     break
                 if status == "CANCELLED":
                     break
+                # Si sigue LIVE tras el primer poll → no cruzó el libro, cancelar ya
+                if first_check and status == "LIVE" and size_matched == 0.0:
+                    break
             except Exception:
                 pass
+            first_check = False
 
         # Sin fill → cancelar orden y reportar fallo
         if size_matched < round(shares, 2) * 0.10:
