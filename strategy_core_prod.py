@@ -168,28 +168,37 @@ def place_taker_buy(token_id: str, shares: float, price: float) -> dict:
 
 def place_taker_sell(token_id: str, shares: float, bid_price: float) -> dict:
     """
-    Coloca una orden SELL GTC con escalado agresivo de precio para garantizar fill.
+    Coloca una orden SELL GTC re-leyendo el bid en cada reintento.
 
-    Intentos: bid_price, bid_price-0.05, bid_price-0.10, ... hasta 0.01 (cada 3s)
-    Por cada intento:
-      1. Coloca orden GTC al precio actual
-      2. Polling fill durante 3s (cada 0.5s)
-      3. Si no llenó → cancela y baja 0.05
-    Retorna dict con {"success": bool, "orderID": str|None, "error": str|None}
+    5 intentos, 3s polling cada uno:
+      Intento 1: bid_actual           (0¢ descuento)
+      Intento 2: bid_actual - 0.01   (1¢, bid refrescado)
+      Intento 3: bid_actual - 0.01   (1¢, bid refrescado)
+      Intento 4: bid_actual - 0.02   (2¢, bid refrescado)
+      Intento 5: bid_actual - 0.02   (2¢, bid refrescado)
+    Máximo 2¢ de descuento sobre el bid real en cada intento.
     """
     client       = get_authenticated_clob_client()
     FILL_TIMEOUT = 3.0
     FILL_POLL    = 0.5
+    MAX_RETRIES  = 5
+    DESCUENTOS   = [0.0, 0.01, 0.01, 0.02, 0.02]
 
-    # Construir escala de precios: bid_price, bid-0.05, bid-0.10, ... hasta 0.01
-    precios = []
-    p = round(bid_price, 4)
-    while p > 0.01:
-        precios.append(round(p, 4))
-        p = round(p - 0.05, 4)
-    precios.append(0.01)  # piso garantizado
+    current_bid = bid_price
 
-    for intento, precio in enumerate(precios, start=1):
+    for intento in range(MAX_RETRIES):
+        # Re-leer bid actual en reintentos para adaptarse al mercado
+        if intento > 0:
+            try:
+                ob, _ = get_order_book_metrics(token_id)
+                if ob and ob["best_bid"] > 0:
+                    current_bid = ob["best_bid"]
+            except Exception:
+                pass
+
+        descuento = DESCUENTOS[intento]
+        precio    = max(round(current_bid - descuento, 4), 0.01)
+
         try:
             order_args   = OrderArgs(
                 token_id=token_id,
@@ -226,22 +235,22 @@ def place_taker_sell(token_id: str, shares: float, bid_price: float) -> dict:
                 return {
                     "success":    True,
                     "orderID":    order_id,
-                    "fill_price": precio,  # precio del intento que llenó (confiable)
+                    "fill_price": precio,
                     "error":      None,
                     "raw":        resp,
                 }
 
-            # No se llenó — cancelar antes de bajar precio
+            # No llenó — cancelar y reintentar con bid refrescado
             try:
                 client.cancel(order_id)
             except Exception:
                 pass
 
         except Exception as e:
-            if intento == len(precios):
-                return {"success": False, "orderID": None, "error": str(e), "raw": None}
+            if intento == MAX_RETRIES - 1:
+                return {"success": False, "orderID": None, "fill_price": None, "error": str(e), "raw": None}
 
-    return {"success": False, "orderID": None, "error": "sin fill tras escalado completo hasta 0.01", "raw": None}
+    return {"success": False, "orderID": None, "fill_price": None, "error": "sin fill tras 5 intentos", "raw": None}
 
 
 def place_stop_loss_order(token_id: str, shares: float, sl_price: float) -> dict:
