@@ -223,30 +223,10 @@ def place_taker_sell(token_id: str, shares: float, bid_price: float) -> dict:
                     pass
 
             if filled:
-                # Intentar capturar el precio real de fill (puede ser mejor que el límite)
-                fill_price = None
-                try:
-                    final_info = client.get_order(order_id)
-                    # associate_trades contiene los fills reales con su precio
-                    trades_list = (final_info.get("associate_trades")
-                                   or final_info.get("trades") or [])
-                    if trades_list:
-                        total_val  = sum(float(t.get("price", precio)) * float(t.get("size", 0)) for t in trades_list)
-                        total_size = sum(float(t.get("size", 0)) for t in trades_list)
-                        if total_size > 0:
-                            fill_price = round(total_val / total_size, 4)
-                    # Fallback: maker_amount / taker_amount
-                    if fill_price is None:
-                        maker = float(final_info.get("maker_amount") or 0)
-                        taker = float(final_info.get("taker_amount") or 0)
-                        if taker > 0:
-                            fill_price = round(maker / taker, 4)
-                except Exception:
-                    pass
                 return {
                     "success":    True,
                     "orderID":    order_id,
-                    "fill_price": fill_price,   # precio real de ejecución (None si no disponible)
+                    "fill_price": precio,  # precio del intento que llenó (confiable)
                     "error":      None,
                     "raw":        resp,
                 }
