@@ -150,7 +150,7 @@ def place_taker_buy(token_id: str, shares: float, price: float) -> dict:
                 "success":       False,
                 "orderID":       order_id,
                 "shares_filled": 0.0,
-                "error":         f"sin fill tras 4s (size_matched={size_matched:.2f})",
+                "error":         f"sin fill (size_matched={size_matched:.2f}) — orden cancelada",
                 "raw":           resp,
             }
 
