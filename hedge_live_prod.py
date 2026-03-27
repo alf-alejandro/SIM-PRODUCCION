@@ -636,18 +636,19 @@ def _aplicar_resolucion(resuelto: str, up_m, dn_m):
     # ── Lado 1 ────────────────────────────────────────────────────────────
     if resuelto == pos["lado1_side"]:
         m_win = up_m if pos["lado1_side"] == "UP" else dn_m
-        _, pnl_l1, ok1 = forzar_salida(
+        _, _, ok1 = forzar_salida(
             pos["lado1_shares"], pos["lado1_usd"], m_win,
             pos["lado1_token_id"], f"resolucion {resuelto}"
         )
         if not ok1:
-            # Marcar salida pendiente — se reintentará en el próximo ciclo
             pos["salida_pendiente"]  = True
             pos["salida_tipo"]       = "RESOLUTION"
             pos["salida_resolucion"] = resuelto
             pos["salida_retries"]    = pos.get("salida_retries", 0) + 1
             log_ev(f"RESOLUTION venta pendiente (intento #{pos['salida_retries']}) — reintentando en {POLL_INTERVAL}s")
             return
+        # PnL a $1.00 (resolución) — independiente del precio de venta ejecutado
+        pnl_l1 = round(pos["lado1_shares"] * 1.0 - pos["lado1_usd"], 4)
         partes.append(f"L1 {pos['lado1_side']}=WIN(${pnl_l1:+.2f})")
     else:
         pnl_l1 = -pos["lado1_usd"]
@@ -658,7 +659,7 @@ def _aplicar_resolucion(resuelto: str, up_m, dn_m):
     if pos["hedgeado"]:
         if resuelto == pos["lado2_side"]:
             m_win = dn_m if pos["lado2_side"] == "DOWN" else up_m
-            _, pnl_l2, ok2 = forzar_salida(
+            _, _, ok2 = forzar_salida(
                 pos["lado2_shares"], pos["lado2_usd"], m_win,
                 pos["lado2_token_id"], f"resolucion hedge {resuelto}"
             )
@@ -669,6 +670,8 @@ def _aplicar_resolucion(resuelto: str, up_m, dn_m):
                 pos["salida_retries"]    = pos.get("salida_retries", 0) + 1
                 log_ev(f"RESOLUTION hedge venta pendiente (intento #{pos['salida_retries']}) — reintentando en {POLL_INTERVAL}s")
                 return
+            # PnL a $1.00 (resolución) — independiente del precio de venta ejecutado
+            pnl_l2 = round(pos["lado2_shares"] * 1.0 - pos["lado2_usd"], 4)
             partes.append(f"L2 {pos['lado2_side']}=WIN(${pnl_l2:+.2f})")
         else:
             pnl_l2 = -pos["lado2_usd"]
