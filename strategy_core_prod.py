@@ -118,9 +118,9 @@ def place_taker_buy(token_id: str, shares: float, price: float) -> dict:
 
         order_id = resp["orderID"]
 
-        # Polling fill durante 2s (cada 0.5s) — taker al ask llena en <1s típicamente
+        # Polling fill durante 4s (cada 0.5s) — taker al ask llena en <1s típicamente
         size_matched = 0.0
-        deadline = time.time() + 2.0
+        deadline = time.time() + 4.0
         while time.time() < deadline:
             time.sleep(0.5)
             try:
@@ -144,7 +144,7 @@ def place_taker_buy(token_id: str, shares: float, price: float) -> dict:
                 "success":       False,
                 "orderID":       order_id,
                 "shares_filled": 0.0,
-                "error":         f"sin fill tras 2s (size_matched={size_matched:.2f})",
+                "error":         f"sin fill tras 4s (size_matched={size_matched:.2f})",
                 "raw":           resp,
             }
 
