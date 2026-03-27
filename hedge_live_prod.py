@@ -356,7 +356,7 @@ def comprar(lado: str, m: dict, token_id: str) -> tuple[float, float, float]:
         log_ev(f"  Capital insuficiente: ${estado['capital']:.2f} < ${usd:.2f}")
         return 0.0, 0.0, 0.0
 
-    precio = round(precio + 0.01, 4)  # +1¢ para garantizar cruce taker inmediato
+    precio = round(precio + 0.005, 4)  # +0.5¢ para garantizar cruce taker inmediato
     shares = round(usd / precio, 2)
 
     result = place_taker_buy(token_id, shares, precio)
