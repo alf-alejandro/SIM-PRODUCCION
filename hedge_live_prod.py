@@ -390,9 +390,15 @@ def forzar_salida(
     bid         = m["best_bid"]
     exit_precio = max(round(bid, 4), 0.01)
 
-    # Sincronizar balance del token condicional en el CLOB
-    approve_conditional_token(token_id)
-    clob_balance = get_clob_balance(token_id)
+    # Sincronizar balance del token condicional en el CLOB — hasta 5 intentos
+    clob_balance = 0.0
+    for _intento_bal in range(5):
+        approve_conditional_token(token_id)
+        clob_balance = get_clob_balance(token_id)
+        if clob_balance >= 0.01:
+            break
+        time.sleep(1.0)
+
     shares_a_vender = round(min(clob_balance * 0.99, shares), 2) if clob_balance >= 0.01 else 0.0
 
     if shares_a_vender <= 0:
