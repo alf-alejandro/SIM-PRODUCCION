@@ -377,7 +377,7 @@ def comprar(lado: str, m: dict, token_id: str) -> tuple[float, float, float]:
     # Pre-aprobar el token condicional para agilizar la venta posterior (patrón basket_prod)
     approve_conditional_token(token_id)
 
-    return precio, shares_filled, usd_real
+    return fill_price, shares_filled, usd_real
 
 
 # ─── SALIDA REAL ──────────────────────────────────────────────────────────────
@@ -439,6 +439,12 @@ def comprar_sim(lado: str, mkt: dict) -> tuple[float, float, float]:
 
     precio = round(ob["best_ask"] + 0.010, 4)
     usd    = MONTO_FIJO_POR_LADO
+
+    # Re-validar rango de precio tras el lag — puede haber movido fuera del rango
+    ask_actual = ob["best_ask"]
+    if not (PRECIO_MIN_LADO1 <= ask_actual <= PRECIO_MAX_LADO1):
+        log_ev(f"  [SIM] Precio {ask_actual:.4f} fuera de rango tras lag — entrada cancelada")
+        return 0.0, 0.0, 0.0
 
     if usd > estado["capital"]:
         log_ev(f"  [SIM] Capital insuficiente: ${estado['capital']:.2f} < ${usd:.2f}")
@@ -806,9 +812,14 @@ def reintentar_salida_pendiente(up_m, dn_m):
         m_lado1  = up_m if lado1 == "UP" else dn_m
         razon    = pos["salida_razon"] or "reintento early exit"
 
-        exit_precio, pnl, ok = forzar_salida(
-            pos["lado1_shares"], pos["lado1_usd"], m_lado1, token_id, razon
-        )
+        if SIM_MODE:
+            exit_precio, pnl, ok = forzar_salida_sim(
+                pos["lado1_shares"], pos["lado1_usd"], m_lado1, razon
+            )
+        else:
+            exit_precio, pnl, ok = forzar_salida(
+                pos["lado1_shares"], pos["lado1_usd"], m_lado1, token_id, razon
+            )
         if not ok:
             return  # sigue pendiente, se reintentará en el próximo ciclo
 
@@ -875,7 +886,8 @@ async def main_loop():
     log_ev("=" * 65)
 
     restaurar_estado()
-    sincronizar_capital_clob()
+    if not SIM_MODE:
+        sincronizar_capital_clob()
     guardar_estado()
 
     mkt                = None
@@ -910,9 +922,10 @@ async def main_loop():
                     mkt_end_date = mkt.get("end_date")
                     log_ev(f"Mercado: {mkt.get('question', '')}")
                     # Pre-calentar cache CLOB para ambos tokens — reduce delay de balance al vender
-                    approve_conditional_token(mkt["up_token_id"])
-                    approve_conditional_token(mkt["down_token_id"])
-                    log_ev("  Cache CLOB pre-aprobado (UP + DOWN)")
+                    if not SIM_MODE:
+                        approve_conditional_token(mkt["up_token_id"])
+                        approve_conditional_token(mkt["down_token_id"])
+                        log_ev("  Cache CLOB pre-aprobado (UP + DOWN)")
                     guardar_estado()
                 else:
                     log_ev("Sin mercado activo — reintentando en 10s...")
