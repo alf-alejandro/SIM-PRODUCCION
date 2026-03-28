@@ -59,9 +59,9 @@ EVENTS_FILE     = os.environ.get("EVENTS_FILE", "/app/data/events.log")
 # ─── PARÁMETROS ───────────────────────────────────────────────────────────────
 MONTO_FIJO_POR_LADO  = float(os.environ.get("ENTRY_USD", "3.75"))
 POLL_INTERVAL        = 0.5
-OBI_THRESHOLD        = 0.10
+OBI_THRESHOLD        = 0.22
 OBI_WINDOW_SIZE      = 8
-OBI_STRONG_THRESHOLD = 0.20
+OBI_STRONG_THRESHOLD = 0.38
 SPREAD_MAX           = 0.12
 PRECIO_MIN_LADO1     = 0.35
 PRECIO_MAX_LADO1     = 0.50
@@ -428,9 +428,9 @@ def forzar_salida(
 # ─── COMPRA / SALIDA SIMULADA ─────────────────────────────────────────
 
 def comprar_sim(lado: str, mkt: dict) -> tuple[float, float, float]:
-    """Simula una compra: espera 0.5s (lag de entrada) y usa el precio ask real en ese momento."""
+    """Simula una compra: espera 1.0s (lag de entrada) y usa el precio ask real en ese momento."""
     import asyncio, threading
-    time.sleep(0.5)  # lag de entrada simulado
+    time.sleep(1.0)  # lag de entrada simulado
 
     token_id = mkt["up_token_id"] if lado == "UP" else mkt["down_token_id"]
     ob, _    = get_order_book_metrics(token_id)
