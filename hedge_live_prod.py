@@ -482,21 +482,23 @@ def evaluar_señal(up_m, dn_m):
 
     mid_up = mid(up_m)
     mid_dn = mid(dn_m)
+    ask_up = up_m["best_ask"]
+    ask_dn = dn_m["best_ask"]
 
     if signal_up["combined"] >= OBI_STRONG_THRESHOLD:
-        if PRECIO_MIN_LADO1 <= mid_up <= PRECIO_MAX_LADO1:
+        if PRECIO_MIN_LADO1 <= ask_up <= PRECIO_MAX_LADO1:
             return signal_up, signal_dn, "UP"
 
     if signal_dn["combined"] >= OBI_STRONG_THRESHOLD:
-        if PRECIO_MIN_LADO1 <= mid_dn <= PRECIO_MAX_LADO1:
+        if PRECIO_MIN_LADO1 <= ask_dn <= PRECIO_MAX_LADO1:
             return signal_up, signal_dn, "DOWN"
 
     if signal_up["label"] in ("UP", "STRONG UP") and signal_up["combined"] > signal_dn["combined"]:
-        if PRECIO_MIN_LADO1 <= mid_up <= PRECIO_MAX_LADO1:
+        if PRECIO_MIN_LADO1 <= ask_up <= PRECIO_MAX_LADO1:
             return signal_up, signal_dn, "UP"
 
     if signal_dn["label"] in ("UP", "STRONG UP") and signal_dn["combined"] > signal_up["combined"]:
-        if PRECIO_MIN_LADO1 <= mid_dn <= PRECIO_MAX_LADO1:
+        if PRECIO_MIN_LADO1 <= ask_dn <= PRECIO_MAX_LADO1:
             return signal_up, signal_dn, "DOWN"
 
     return signal_up, signal_dn, None
