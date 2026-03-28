@@ -89,6 +89,9 @@
   .btn-stop:hover  { filter: brightness(1.15); }
   .btn-csv   { background: transparent; color: var(--accent); border: 1px solid var(--accent); }
   .btn-csv:hover { background: rgba(0,212,255,.08); }
+  .btn-sim   { background: #7c3aed; color: #fff; }
+  .btn-sim:hover { filter: brightness(1.15); }
+  .btn-sim.active { background: #f59e0b; color: #000; }
   .btn:disabled { opacity: .4; cursor: not-allowed; filter: none; }
 
   .main { padding: 20px 24px; display: grid; gap: 16px; }
@@ -232,6 +235,7 @@
     <span id="status-text" style="font-family:var(--mono);font-size:11px;color:var(--muted)">OFFLINE</span>
     <button class="btn btn-start" id="btn-start" onclick="startBot()">&#9654; START</button>
     <button class="btn btn-stop"  id="btn-stop"  onclick="stopBot()" disabled>&#9632; STOP</button>
+    <button class="btn btn-sim"   id="btn-sim"   onclick="startSim()">&#9654; SIMULATION</button>
     <button class="btn btn-csv"   onclick="downloadCSV()">&#11015; CSV</button>
   </div>
 </header>
@@ -464,8 +468,18 @@ function updateDashboard(d) {
   document.getElementById('status-dot').className    = 'status-dot' + (running ? ' running' : '');
   document.getElementById('status-text').textContent = paused ? 'PAUSADO' : (running ? 'RUNNING' : 'STOPPED');
   document.getElementById('status-text').style.color = paused ? 'var(--yellow)' : (running ? 'var(--green)' : 'var(--muted)');
-  document.getElementById('btn-start').disabled = running && !paused;
+  document.getElementById('btn-start').disabled = (running && !paused) || d.sim_mode;
   document.getElementById('btn-stop').disabled  = paused || !running;
+  const simBtn = document.getElementById('btn-sim');
+  if (d.sim_mode) {
+    simBtn.textContent = '⏹ STOP SIM';
+    simBtn.classList.add('active');
+    simBtn.onclick = stopSim;
+  } else {
+    simBtn.innerHTML = '&#9654; SIMULATION';
+    simBtn.classList.remove('active');
+    simBtn.onclick = startSim;
+  }
 
   setEl('kpi-capital',      '$' + (d.capital||0).toFixed(2));
   setEl('kpi-capital-init', 'Inicial: $' + CAPITAL_INICIAL.toFixed(2));
@@ -622,6 +636,22 @@ async function stopBot() {
 }
 
 function downloadCSV() { window.location = '/api/csv'; }
+
+async function startSim() {
+  try {
+    const r = await fetch('/api/start_sim', { method: 'POST' });
+    const d = await r.json();
+    if (!d.ok) alert(d.msg || 'Error al iniciar simulacion');
+  } catch(e) { alert('No se pudo conectar'); }
+}
+
+async function stopSim() {
+  try {
+    const r = await fetch('/api/stop_sim', { method: 'POST' });
+    const d = await r.json();
+    if (!d.ok) alert(d.msg || 'Error al detener simulacion');
+  } catch(e) { alert('No se pudo conectar'); }
+}
 
 function setEl(id, val) {
   const el = document.getElementById(id);

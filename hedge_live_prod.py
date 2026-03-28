@@ -82,7 +82,8 @@ NEAR_RESOLUTION_THRESH = 0.82
 NEAR_RESOLUTION_SECS   = 90
 
 # ─── ESTADO GLOBAL ────────────────────────────────────────────────────────────
-PAUSED = True
+PAUSED    = True
+SIM_MODE  = False
 
 estado = {
     "capital":      CAPITAL_INICIAL,
@@ -171,6 +172,7 @@ def guardar_estado(up_m=None, dn_m=None):
                 "ob_up":           ob_up,
                 "ob_dn":           ob_dn,
                 "paused":          PAUSED,
+                "sim_mode":        SIM_MODE,
                 "posicion": {
                     "activa":        pos["activa"],
                     "lado1":         pos["lado1_side"],
@@ -423,6 +425,47 @@ def forzar_salida(
     return fill_price, pnl, True
 
 
+# ─── COMPRA / SALIDA SIMULADA ─────────────────────────────────────────
+
+def comprar_sim(lado: str, mkt: dict) -> tuple[float, float, float]:
+    """Simula una compra: espera 0.5s (lag de entrada) y usa el precio ask real en ese momento."""
+    import asyncio, threading
+    time.sleep(0.5)  # lag de entrada simulado
+
+    token_id = mkt["up_token_id"] if lado == "UP" else mkt["down_token_id"]
+    ob, _    = get_order_book_metrics(token_id)
+    if not ob:
+        return 0.0, 0.0, 0.0
+
+    precio = round(ob["best_ask"] + 0.010, 4)
+    usd    = MONTO_FIJO_POR_LADO
+
+    if usd > estado["capital"]:
+        log_ev(f"  [SIM] Capital insuficiente: ${estado['capital']:.2f} < ${usd:.2f}")
+        return 0.0, 0.0, 0.0
+
+    shares   = round(usd / precio, 2)
+    usd_real = round(shares * precio, 4)
+
+    estado["capital"] -= usd_real
+    log_ev(f"  [SIM] COMPRA {lado} @ {precio:.4f} (ask+lag) | {shares:.2f}sh | ${usd_real:.2f} | cap=${estado['capital']:.2f}")
+    return precio, shares, usd_real
+
+
+def forzar_salida_sim(
+    shares: float,
+    usd_original: float,
+    m: dict,
+    razon: str = "",
+) -> tuple[float, float, bool]:
+    """Simula una venta al bid actual."""
+    bid        = m["best_bid"]
+    fill_price = round(bid, 4)
+    pnl        = round(shares * fill_price - usd_original, 4)
+    log_ev(f"  [SIM] VENTA @ {fill_price:.4f} (bid) | {shares:.2f}sh | PnL: ${pnl:+.4f} | {razon}")
+    return fill_price, pnl, True
+
+
 # ─── SEÑAL DE ENTRADA ─────────────────────────────────────────────────────────
 
 def evaluar_señal(up_m, dn_m):
@@ -477,7 +520,10 @@ def intentar_entrada(up_m, dn_m, mkt, secs) -> bool:
 
     log_ev(f"SEÑAL {lado} — OBI={obi:+.3f} | mid={mid(m_lado):.4f} | {int(secs)}s restantes")
 
-    precio, shares, usd = comprar(lado, m_lado, token_id)
+    if SIM_MODE:
+        precio, shares, usd = comprar_sim(lado, mkt)
+    else:
+        precio, shares, usd = comprar(lado, m_lado, token_id)
     if usd == 0.0:
         return False
 
@@ -523,7 +569,10 @@ def intentar_hedge(up_m, dn_m, mkt):
 
     log_ev(f"  Lado1 subio {subida*100:+.1f}c — hedgeando en {lado2} @ ask={ask_lado2:.4f}")
 
-    precio, shares, usd = comprar(lado2, m_lado2, token_id2)
+    if SIM_MODE:
+        precio, shares, usd = comprar_sim(lado2, mkt)
+    else:
+        precio, shares, usd = comprar(lado2, m_lado2, token_id2)
     if usd == 0.0:
         return
 
@@ -570,13 +619,18 @@ def intentar_early_exit(up_m, dn_m, secs):
     if not razon:
         return
 
-    exit_precio, pnl, ok = forzar_salida(
-        pos["lado1_shares"],
-        pos["lado1_usd"],
-        m_lado1,
-        token_id1,
-        razon,
-    )
+    if SIM_MODE:
+        exit_precio, pnl, ok = forzar_salida_sim(
+            pos["lado1_shares"], pos["lado1_usd"], m_lado1, razon,
+        )
+    else:
+        exit_precio, pnl, ok = forzar_salida(
+            pos["lado1_shares"],
+            pos["lado1_usd"],
+            m_lado1,
+            token_id1,
+            razon,
+        )
 
     if not ok:
         # Marcar salida pendiente — se reintentará en el próximo ciclo
@@ -637,10 +691,15 @@ def _aplicar_resolucion(resuelto: str, up_m, dn_m):
     # ── Lado 1 ────────────────────────────────────────────────────────────
     if resuelto == pos["lado1_side"]:
         m_win = up_m if pos["lado1_side"] == "UP" else dn_m
-        _, _, ok1 = forzar_salida(
-            pos["lado1_shares"], pos["lado1_usd"], m_win,
-            pos["lado1_token_id"], f"resolucion {resuelto}"
-        )
+        if SIM_MODE:
+            _, pnl_sim_l1, ok1 = forzar_salida_sim(
+                pos["lado1_shares"], pos["lado1_usd"], m_win, f"resolucion {resuelto}",
+            )
+        else:
+            _, _, ok1 = forzar_salida(
+                pos["lado1_shares"], pos["lado1_usd"], m_win,
+                pos["lado1_token_id"], f"resolucion {resuelto}"
+            )
         if not ok1:
             pos["salida_pendiente"]  = True
             pos["salida_tipo"]       = "RESOLUTION"
@@ -660,10 +719,15 @@ def _aplicar_resolucion(resuelto: str, up_m, dn_m):
     if pos["hedgeado"]:
         if resuelto == pos["lado2_side"]:
             m_win = dn_m if pos["lado2_side"] == "DOWN" else up_m
-            _, _, ok2 = forzar_salida(
-                pos["lado2_shares"], pos["lado2_usd"], m_win,
-                pos["lado2_token_id"], f"resolucion hedge {resuelto}"
-            )
+            if SIM_MODE:
+                _, pnl_sim_l2, ok2 = forzar_salida_sim(
+                    pos["lado2_shares"], pos["lado2_usd"], m_win, f"resolucion hedge {resuelto}",
+                )
+            else:
+                _, _, ok2 = forzar_salida(
+                    pos["lado2_shares"], pos["lado2_usd"], m_win,
+                    pos["lado2_token_id"], f"resolucion hedge {resuelto}"
+                )
             if not ok2:
                 pos["salida_pendiente"]  = True
                 pos["salida_tipo"]       = "RESOLUTION"
@@ -775,6 +839,22 @@ def pausar_bot():
     global PAUSED
     PAUSED = True
     log_ev("Bot PAUSADO")
+    guardar_estado()
+
+
+def activar_sim():
+    global PAUSED, SIM_MODE
+    SIM_MODE = True
+    PAUSED   = False
+    log_ev("Bot SIMULACION ACTIVADO")
+    guardar_estado()
+
+
+def pausar_sim():
+    global PAUSED, SIM_MODE
+    SIM_MODE = False
+    PAUSED   = True
+    log_ev("Bot SIMULACION PAUSADO")
     guardar_estado()
 
 
@@ -939,6 +1019,12 @@ if __name__ == "__main__":
                 log_ev("Posicion reseteada manualmente via /api/reset")
                 guardar_estado()
                 self._send(200, "application/json", b'{"ok":true,"msg":"Posicion reseteada"}')
+            elif self.path == "/api/start_sim":
+                activar_sim()
+                self._send(200, "application/json", b'{"ok":true,"msg":"Simulacion activada"}')
+            elif self.path == "/api/stop_sim":
+                pausar_sim()
+                self._send(200, "application/json", b'{"ok":true,"msg":"Simulacion pausada"}')
             else:
                 self._send(404, "text/plain", b"Not found")
 
