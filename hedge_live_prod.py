@@ -364,12 +364,13 @@ def comprar(lado: str, m: dict, token_id: str) -> tuple[float, float, float]:
         log_ev(f"  ERROR compra {lado}: {result['error']}")
         return 0.0, 0.0, 0.0
 
-    # Usar shares realmente llenadas (puede ser < shares si fue partial fill)
+    # Usar shares y precio real de fill
     shares_filled = result.get("shares_filled") or shares
-    usd_real      = round(shares_filled * precio, 4)
+    fill_price    = result.get("fill_price") or precio
+    usd_real      = round(shares_filled * fill_price, 4)
 
     estado["capital"] -= usd_real
-    log_ev(f"  COMPRA REAL {lado} @ {precio:.4f} (ask) | {shares_filled:.2f}sh (pedido={shares:.2f}) | ${usd_real:.2f} | orderID={result['orderID']}")
+    log_ev(f"  COMPRA REAL {lado} @ {fill_price:.4f} (ask_enviado={precio:.4f}) | {shares_filled:.2f}sh (pedido={shares:.2f}) | ${usd_real:.2f} | orderID={result['orderID']}")
 
     # Pre-aprobar el token condicional para agilizar la venta posterior (patrón basket_prod)
     approve_conditional_token(token_id)

@@ -161,10 +161,12 @@ def place_taker_buy(token_id: str, shares: float, price: float) -> dict:
             except Exception:
                 pass
 
+        fill_price = get_avg_fill_price(order_id, price)
         return {
             "success":       True,
             "orderID":       order_id,
             "shares_filled": round(size_matched, 2),
+            "fill_price":    fill_price,
             "error":         None,
             "raw":           resp,
         }
@@ -238,10 +240,11 @@ def place_taker_sell(token_id: str, shares: float, bid_price: float) -> dict:
                     pass
 
             if filled:
+                fill_price_real = get_avg_fill_price(order_id, precio)
                 return {
                     "success":    True,
                     "orderID":    order_id,
-                    "fill_price": precio,
+                    "fill_price": fill_price_real,
                     "error":      None,
                     "raw":        resp,
                 }
@@ -303,6 +306,27 @@ def get_clob_balance(token_id: str) -> float:
     except Exception:
         pass
     return 0.0
+
+
+
+def get_avg_fill_price(order_id: str, fallback: float) -> float:
+    """Consulta el precio promedio real de fill de una orden via /data/trades."""
+    try:
+        r = requests.get(
+            f"{CLOB_HOST}/data/trades",
+            params={"taker_order_id": order_id},
+            timeout=5,
+        )
+        if r.status_code == 200:
+            trades = r.json().get("data", [])
+            if trades:
+                total_val = sum(float(t["price"]) * float(t["size"]) for t in trades)
+                total_sz  = sum(float(t["size"])  for t in trades)
+                if total_sz > 0:
+                    return round(total_val / total_sz, 4)
+    except Exception:
+        pass
+    return fallback
 
 
 def cancel_order(order_id: str) -> bool:
