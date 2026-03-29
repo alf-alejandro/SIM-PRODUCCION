@@ -33,6 +33,8 @@ import logging
 from datetime import datetime, timezone
 from collections import deque
 
+from ws_client import MarketDataWS
+
 from strategy_core import (
     find_active_market,
     get_order_book_metrics,
@@ -658,6 +660,7 @@ async def main_loop():
     guardar_estado()
 
     mkt                = None
+    mkt_ws             = MarketDataWS()   # order book en tiempo real vía WebSocket
     loop               = asyncio.get_running_loop()
     signal_up_cache    = None
     signal_dn_cache    = None
@@ -691,6 +694,9 @@ async def main_loop():
                     estado["ciclos"] += 1
                     mkt_end_date = mkt.get("end_date")
                     log_ev(f"Mercado: {mkt.get('question', '')}")
+                    # Suscribir WebSocket al order book del nuevo mercado
+                    mkt_ws.subscribe([mkt["up_token_id"], mkt["down_token_id"]])
+                    log_ev("  MarketWS suscrito — order book en tiempo real")
                     guardar_estado()
                 else:
                     log_ev("Sin mercado activo — reintentando en 10s...")
@@ -698,17 +704,21 @@ async def main_loop():
                     await asyncio.sleep(10)
                     continue
 
-            # 2. Leer order books (con backoff exponencial)
-            up_m, err_up = await loop.run_in_executor(
-                None, get_order_book_metrics, mkt["up_token_id"]
-            )
-            dn_m, err_dn = await loop.run_in_executor(
-                None, get_order_book_metrics, mkt["down_token_id"]
-            )
+            # 2. Leer order books: WebSocket primero, fallback REST
+            up_m = mkt_ws.get_metrics(mkt["up_token_id"])
+            dn_m = mkt_ws.get_metrics(mkt["down_token_id"])
+
+            if not up_m or not dn_m:
+                # WS aún no tiene snapshot — usar REST
+                up_m, err_up = await loop.run_in_executor(
+                    None, get_order_book_metrics, mkt["up_token_id"]
+                )
+                dn_m, err_dn = await loop.run_in_executor(
+                    None, get_order_book_metrics, mkt["down_token_id"]
+                )
 
             if not up_m or not dn_m:
                 _ob_error_count += 1
-                # [4] Backoff exponencial
                 backoff = min(POLL_INTERVAL * (2 ** _ob_error_count), 60)
                 log_ev(f"Error OB #{_ob_error_count}: {err_up or err_dn} — backoff {backoff:.0f}s")
                 await asyncio.sleep(backoff)
@@ -723,6 +733,7 @@ async def main_loop():
                 if pos["activa"]:
                     verificar_resolucion(up_m, dn_m, secs)
                 log_ev("Mercado expirado — buscando próximo ciclo...")
+                mkt_ws.unsubscribe()
                 mkt = None
                 mkt_end_date = None
                 await asyncio.sleep(5)
