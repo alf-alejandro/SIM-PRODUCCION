@@ -1,3 +1,4 @@
 requests
 py-clob-client
 eth-account
+websocket-client>=1.7.0

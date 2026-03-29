@@ -23,6 +23,10 @@ from py_clob_client.clob_types import (
 )
 from py_clob_client.order_builder.constants import BUY, SELL
 
+from ws_client import FillWatcher
+
+_api_creds = {"key": "", "secret": "", "passphrase": ""}
+
 CLOB_HOST   = "https://clob.polymarket.com"
 GAMMA_API   = "https://gamma-api.polymarket.com"
 SLOT_ORIGIN = 1771778100
@@ -65,7 +69,11 @@ def get_authenticated_clob_client() -> ClobClient:
         funder=proxy_address if proxy_address else None,
         signature_type=1,
     )
-    _auth_client.set_api_creds(_auth_client.create_or_derive_api_creds())
+    creds = _auth_client.create_or_derive_api_creds()
+    _auth_client.set_api_creds(creds)
+    _api_creds["key"]        = creds.api_key
+    _api_creds["secret"]     = creds.api_secret
+    _api_creds["passphrase"] = creds.api_passphrase
     try:
         _auth_client.update_balance_allowance(
             BalanceAllowanceParams(asset_type=AssetType.COLLATERAL)
@@ -118,27 +126,38 @@ def place_taker_buy(token_id: str, shares: float, price: float) -> dict:
 
         order_id = resp["orderID"]
 
-        # Polling fill: si en el primer check (0.5s) la orden está LIVE (maker),
-        # cancelar inmediatamente en lugar de esperar 4s bloqueando el loop.
+        # ── WebSocket fill detection (<100ms) con fallback a polling REST ─────
         size_matched = 0.0
-        first_check  = True
-        deadline     = time.time() + 4.0
-        while time.time() < deadline:
-            time.sleep(0.5)
+        ws_filled    = False
+
+        if _api_creds["key"]:
             try:
-                info         = client.get_order(order_id)
-                status       = info.get("status", "")
-                size_matched = float(info.get("size_matched", 0) or 0)
-                if status in ("MATCHED", "FILLED") or size_matched >= round(shares, 2) * 0.95:
-                    break
-                if status == "CANCELLED":
-                    break
-                # Si sigue LIVE tras el primer poll → no cruzó el libro, cancelar ya
-                if first_check and status == "LIVE" and size_matched == 0.0:
-                    break
+                ws_r      = FillWatcher(_api_creds["key"], _api_creds["secret"],
+                                        _api_creds["passphrase"], order_id, timeout=3.0).wait()
+                if ws_r["filled"]:
+                    size_matched = ws_r["size_matched"] or round(shares, 2)
+                    ws_filled    = True
             except Exception:
                 pass
-            first_check = False
+
+        if not ws_filled:
+            first_check = True
+            deadline    = time.time() + 4.0
+            while time.time() < deadline:
+                time.sleep(0.25)
+                try:
+                    info         = client.get_order(order_id)
+                    status       = info.get("status", "")
+                    size_matched = float(info.get("size_matched", 0) or 0)
+                    if status in ("MATCHED", "FILLED") or size_matched >= round(shares, 2) * 0.95:
+                        break
+                    if status == "CANCELLED":
+                        break
+                    if first_check and status == "LIVE" and size_matched == 0.0:
+                        break
+                except Exception:
+                    pass
+                first_check = False
 
         # Sin fill → cancelar orden y reportar fallo
         if size_matched < round(shares, 2) * 0.10:
@@ -222,22 +241,37 @@ def place_taker_sell(token_id: str, shares: float, bid_price: float) -> dict:
             if not order_id:
                 continue
 
-            # Polling fill durante FILL_TIMEOUT segundos
-            deadline = time.time() + FILL_TIMEOUT
-            filled   = False
-            while time.time() < deadline:
-                time.sleep(FILL_POLL)
+            # WebSocket fill detection + REST fallback
+            size_matched = 0.0
+            ws_filled    = False
+
+            if _api_creds["key"]:
                 try:
-                    info         = client.get_order(order_id)
-                    status       = info.get("status", "")
-                    size_matched = float(info.get("size_matched", 0) or 0)
-                    if status in ("MATCHED", "FILLED") or size_matched >= round(shares, 2) * 0.9:
-                        filled = True
-                        break
-                    if status == "CANCELLED":
-                        break
+                    ws_r      = FillWatcher(_api_creds["key"], _api_creds["secret"],
+                                            _api_creds["passphrase"], order_id, timeout=3.0).wait()
+                    if ws_r["filled"]:
+                        size_matched = ws_r["size_matched"] or round(shares, 2)
+                        ws_filled    = True
                 except Exception:
                     pass
+
+            if not ws_filled:
+                deadline = time.time() + FILL_TIMEOUT
+                while time.time() < deadline:
+                    time.sleep(FILL_POLL)
+                    try:
+                        info         = client.get_order(order_id)
+                        status       = info.get("status", "")
+                        size_matched = float(info.get("size_matched", 0) or 0)
+                        if status in ("MATCHED", "FILLED") or size_matched >= round(shares, 2) * 0.9:
+                            ws_filled = True
+                            break
+                        if status == "CANCELLED":
+                            break
+                    except Exception:
+                        pass
+
+            filled = ws_filled
 
             if filled:
                 fill_price_real = get_avg_fill_price(order_id, precio)

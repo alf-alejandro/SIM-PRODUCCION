@@ -40,6 +40,7 @@ from strategy_core_prod import (
     get_clob_balance,
     get_usdc_balance,
 )
+from ws_client import MarketDataWS
 
 # ─── LOGGING ──────────────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -126,6 +127,7 @@ pos = {
 eventos      = deque(maxlen=200)
 mkt_end_date = None
 _ob_error_count = 0
+mkt_ws       = MarketDataWS()
 
 
 # ─── PERSISTENCIA ─────────────────────────────────────────────────────────────
@@ -921,6 +923,7 @@ async def main_loop():
                     estado["ciclos"] += 1
                     mkt_end_date = mkt.get("end_date")
                     log_ev(f"Mercado: {mkt.get('question', '')}")
+                    mkt_ws.subscribe([mkt["up_token_id"], mkt["down_token_id"]])
                     # Pre-calentar cache CLOB para ambos tokens — reduce delay de balance al vender
                     if not SIM_MODE:
                         approve_conditional_token(mkt["up_token_id"])
@@ -933,12 +936,16 @@ async def main_loop():
                     await asyncio.sleep(10)
                     continue
 
-            up_m, err_up = await loop.run_in_executor(
-                None, get_order_book_metrics, mkt["up_token_id"]
-            )
-            dn_m, err_dn = await loop.run_in_executor(
-                None, get_order_book_metrics, mkt["down_token_id"]
-            )
+            up_m = mkt_ws.get_metrics(mkt["up_token_id"])
+            dn_m = mkt_ws.get_metrics(mkt["down_token_id"])
+
+            if not up_m or not dn_m:
+                up_m, err_up = await loop.run_in_executor(
+                    None, get_order_book_metrics, mkt["up_token_id"]
+                )
+                dn_m, err_dn = await loop.run_in_executor(
+                    None, get_order_book_metrics, mkt["down_token_id"]
+                )
 
             if not up_m or not dn_m:
                 _ob_error_count += 1
@@ -955,6 +962,7 @@ async def main_loop():
                 if pos["activa"]:
                     verificar_resolucion(up_m, dn_m, secs)
                 log_ev("Mercado expirado — buscando próximo ciclo...")
+                mkt_ws.unsubscribe()
                 mkt = None
                 mkt_end_date = None
                 await asyncio.sleep(5)
